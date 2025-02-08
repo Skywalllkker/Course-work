@@ -1,20 +1,20 @@
-# Course-work
 from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel
 import hashlib
 import time
 from typing import Optional, Dict, List
-from fastapi import FastAPI, HTTPException, Depends
-from pydantic import BaseModel
-from typing import Dict
+import re
+from fastapi import FastAPI
 import secrets
+app = FastAPI()
+
+active_tokens: Dict[str, str] = {}  # username -> tokenw
 
 app = FastAPI()
 
 # Имитация базы данных пользователей
 users_db: Dict[str, Dict[str, str]] = {}
 request_history: List[Dict] = []
-
 
 class User(BaseModel):
     username: str
@@ -71,17 +71,53 @@ def scytale_decrypt(encrypted_message: str, key: int) -> str:
                 index += 1
     return ''.join(decrypted)
 
+
+def is_strong_password(password: str) -> bool:
+    """Проверяет сложность пароля."""
+    if len(password) < 8:
+        return False
+    if not re.search(r"[A-Z]", password):
+        return False
+    if not re.search(r"[a-z]", password):
+        return False
+    if not re.search(r"\d", password):
+        return False
+    if not re.search(r"[!@#$%^&*()_+\-=\[\]{}|;:'\",.<>?/]", password):
+        return False
+    return True
+
+def create_token(username: str) -> str:
+    """Создание уникального токена, привязанного к пользователю."""
+    token = secrets.token_hex(32)
+    active_tokens[token] = username
+    return token
+
+def authenticate_user(x_api_token: Optional[str] = Header(None)) -> str:
+    """Проверяет, существует ли токен и к какому пользователю он относится."""
+    if x_api_token not in active_tokens:
+        raise HTTPException(status_code=403, detail="Ошибка аутентификации")
+    return active_tokens[x_api_token]
 @app.post("/register")
 def register(user: User):
     if user.username in users_db:
         raise HTTPException(status_code=400, detail="Пользователь уже существует")
+    if not is_strong_password(user.password):
+        raise HTTPException(status_code=400,
+                            detail="Пароль слишком простой. Требования: минимум 8 символов, хотя бы одна цифра, одна заглавная буква и один специальный символ.")
+
     hashed_password = hashlib.sha256(user.password.encode()).hexdigest()
     token = create_token(user.username)
     users_db[user.username] = {"password": hashed_password, "token": token}
-    response = {"message": "Пользователь зарегистрирован успешно", "token": token}
-    save_to_history("/register", user.dict(), response, 200)
-    return response
-
+    return {"message": "Пользователь зарегистрирован успешно", "token": token}
+@app.post("/register")
+async def register():
+    return {"message": "Пользователь зарегистрирован успешно", "token": "your_generated_token"}
+@app.post("/logout")
+def logout(x_api_token: Optional[str] = Header(None)):
+    """Удаляет токен пользователя при выходе."""
+    if x_api_token in active_tokens:
+        del active_tokens[x_api_token]
+    return {"message": "Выход выполнен успешно"}
 @app.post("/login")
 def login(request: LoginRequest):
     user = users_db.get(request.username)
@@ -89,21 +125,21 @@ def login(request: LoginRequest):
         raise HTTPException(status_code=400, detail="Неверное имя пользователя или пароль")
     user["token"] = create_token(request.username)
     response = {"token": user["token"]}
-    save_to_history("/login", request.dict(), response, 200)
+    save_to_history("/login", request.model_dump(), response, 200)
     return response
 
 @app.post("/encrypt")
 def encrypt(request: EncryptRequest, username: str = Depends(authenticate_user)):
     encrypted_message = scytale_encrypt(request.message, request.key)
     response = {"encrypted_message": encrypted_message}
-    save_to_history("/encrypt", request.dict(), response, 200)
+    save_to_history("/encrypt", request.model_dump(), response, 200)
     return response
 
 @app.post("/decrypt")
 def decrypt(request: DecryptRequest, username: str = Depends(authenticate_user)):
     decrypted_message = scytale_decrypt(request.message, request.key)
     response = {"decrypted_message": decrypted_message}
-    save_to_history("/decrypt", request.dict(), response, 200)
+    save_to_history("/decrypt", request.model_dump(), response, 200)
     return response
 
 @app.post("/change_password")
@@ -113,7 +149,7 @@ def change_password(request: ChangePasswordRequest, username: str = Depends(auth
         raise HTTPException(status_code=400, detail="Старый пароль неверен")
     users_db[username]["password"] = hashlib.sha256(request.new_password.encode()).hexdigest()
     response = {"message": "Пароль успешно изменен"}
-    save_to_history("/change_password", request.dict(), response, 200)
+    save_to_history("/change_password", request.model_dump(), response, 200)
     return response
 
 @app.get("/history")
@@ -124,6 +160,7 @@ def get_history():
 def clear_history():
     request_history.clear()
     return {"message": "История очищена"}
+#uvicorn main:app --reload  
 
 
 import requests
@@ -361,13 +398,6 @@ def test_login_with_new_password():
     assert response.status_code == 200
     TOKEN = response.json()["token"]
 
-    
-
-
-
-
-
-
-
 
     
+
